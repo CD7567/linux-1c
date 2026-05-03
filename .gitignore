@@ -1,0 +1,41 @@
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Generic build directories
+build/
+out/
+
+# Linux kernel module build artifacts
+*.o
+*.a
+*.s
+*.i
+*.lst
+*.ko
+*.mod
+*.mod.c
+*.mod.o
+*.symvers
+*.order
+Module.symvers
+modules.order
+.*.cmd
+.tmp_versions/
+
+# Optional analysis / coverage leftovers
+*.d
+*.gcno
+*.gcda
+*.gcov
+*.su
