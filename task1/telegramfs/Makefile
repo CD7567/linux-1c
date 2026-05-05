@@ -3,9 +3,14 @@ PWD := $(shell pwd)
 
 obj-m := tgfs.o
 ccflags-y := -I$(src)/include
-tgfs-y := src/core/init.o     \
-          src/device/fops.o   \
-		  src/device/chrdev.o
+tgfs-y := src/core/init.o       \
+          src/device/fops.o     \
+		  src/device/chrdev.o   \
+		  src/chat/chat_store.o
+
+ifneq ($(DEBUG),)
+    ccflags-y += -DDEBUG
+endif
 
 default:
 	$(MAKE) -C $(KERNELDIR) M=$(PWD) modules

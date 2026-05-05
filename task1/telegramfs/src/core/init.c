@@ -4,25 +4,41 @@
 
 #include "telegramfs/core.h"
 #include "telegramfs/device.h"
+#include "telegramfs/chat.h"
 
 int tgfs_module_init(void)
 {
     int err;
 
-    err = tgfs_chrdev_init();
-    if (err < 0) {
-        pr_err("tgfs: failed to register chrdev\n");
+    pr_debug("[tgfs] starting chat store init\n");
+
+	err = tgfs_chat_init();
+	if (err < 0) {
         return err;
     }
 
-    pr_info("tgfs: module initialized\n");
+    pr_debug("[tgfs] starting chrdev init\n");
+
+	err = tgfs_chrdev_init();
+	if (err < 0) {
+		tgfs_chat_exit();
+		return err;
+	}
+
+    pr_info("[tgfs] module initialized\n");
+
     return 0;
 }
 
 void tgfs_module_exit(void)
 {
+    pr_debug("[tgfs] starting chrdev destroy\n");
     tgfs_chrdev_exit();
-	pr_info("tgfs: module unloaded\n");
+
+    pr_debug("[tgfs] starting chat store destroy\n");
+    tgfs_chat_exit();
+
+	pr_info("[tgfs] module unloaded\n");
 }
 
 module_init(tgfs_module_init);

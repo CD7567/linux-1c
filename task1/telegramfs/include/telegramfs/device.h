@@ -8,4 +8,4 @@ extern struct file_operations tgfs_fops;
 int tgfs_chrdev_init(void);
 void tgfs_chrdev_exit(void);
 
-#endif
+#endif /* TELEGRAMFS_DEVICE_H */
