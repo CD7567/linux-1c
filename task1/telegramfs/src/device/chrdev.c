@@ -51,7 +51,7 @@ int tgfs_chrdev_init(void)
         }
     }
 
-    pr_info("[tgfs] chrdev registered, %d minors\n", TGFS_MAX_CHATS);
+    pr_debug("[tgfs] chrdev registered, %d minors\n", TGFS_MAX_CHATS);
     return 0;
 
 err_cdev:
@@ -70,5 +70,5 @@ void tgfs_chrdev_exit(void)
     class_destroy(tgfs_class);
     cdev_del(&tgfs_cdev);
     unregister_chrdev_region(tgfs_devt, TGFS_MAX_CHATS);
-    pr_info("[tgfs] chardev unregistered\n");
+    pr_debug("[tgfs] chrdev destroyed\n");
 }
