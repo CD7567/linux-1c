@@ -45,6 +45,18 @@ static size_t tgfs_chat_start_idx(const struct tgfs_chat *chat)
 	return chat->next_idx;
 }
 
+/*
+ * Helper function to convert unix timestamp to hms format
+ */
+static void tgfs_format_hms(time64_t ts, int *hh, int *mm, int *ss)
+{
+	u64 secs_in_day = ts % 86400;;
+
+	*hh = secs_in_day / 3600;
+	*mm = (secs_in_day % 3600) / 60;
+	*ss = secs_in_day % 60;
+}
+
 int tgfs_chat_push(struct tgfs_chat *chat, const char *msg, size_t len)
 {
 	struct tgfs_msg *slot;
@@ -74,6 +86,7 @@ int tgfs_chat_push(struct tgfs_chat *chat, const char *msg, size_t len)
 	memcpy(slot->text, msg, len);
 	slot->text[len] = '\0';
 	slot->len = len;
+    slot->ts = ktime_get_real_seconds();
 
 	pr_debug(
         "[tgfs] chat_push: stored at idx=%zu text=\"%.*s\"\n",
@@ -153,12 +166,15 @@ ssize_t tgfs_chat_snapshot(struct tgfs_chat *chat, char *out, size_t out_size)
             real_idx,
             msg->len
         );
+        
+        int hh, mm, ss;
+        tgfs_format_hms(msg->ts, &hh, &mm, &ss);
 
 		written = scnprintf(
             out + rendered,
 			out_size - rendered,
-			"[msg] %s\n",
-			msg->text
+			"[%02d:%02d:%02d] %s\n",
+			hh, mm, ss, msg->text
         );
 
 		if (written <= 0) {

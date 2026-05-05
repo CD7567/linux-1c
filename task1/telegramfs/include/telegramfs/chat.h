@@ -2,6 +2,7 @@
 #define TELEGRAMFS_CHAT_H
 
 #include <linux/mutex.h>
+#include <linux/time64.h>
 
 /*
  * In-memory chat store limit
@@ -26,7 +27,7 @@
 /*
  * Max size of serialized message
  */
-#define TGFS_MAX_RENDERED_MSG_SIZE (sizeof("[msg] ") - 1 + TGFS_MAX_MSG_SIZE + 1)
+#define TGFS_MAX_RENDERED_MSG_SIZE (sizeof("[00:00:00] ") + TGFS_MAX_MSG_SIZE)
 
 /*
  * Size of snapshot buffer
@@ -39,6 +40,7 @@
 struct tgfs_msg {
 	char text[TGFS_MAX_MSG_SIZE];
 	size_t len;
+    time64_t ts;
 };
 
 /*
