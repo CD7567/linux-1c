@@ -1,9 +1,11 @@
 KERNELDIR ?= /lib/modules/$(shell uname -r)/build
 PWD := $(shell pwd)
 
-obj-m := telegram_fs.o
+obj-m := tgfs.o
 ccflags-y := -I$(src)/include
-telegram_fs-y := src/core/init.o
+tgfs-y := src/core/init.o     \
+          src/device/fops.o   \
+		  src/device/chrdev.o
 
 default:
 	$(MAKE) -C $(KERNELDIR) M=$(PWD) modules
