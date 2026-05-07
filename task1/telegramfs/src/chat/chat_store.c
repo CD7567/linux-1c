@@ -13,6 +13,7 @@ int tgfs_chat_init(void)
 		mutex_init(&tgfs_chats[i].lock);
 		tgfs_chats[i].msg_count = 0;
 		tgfs_chats[i].next_idx = 0;
+        tgfs_chats[i].read_limit = TGFS_READ_MSG_LIMIT_DEFAULT;
 
 		for (int j = 0; j < TGFS_MAX_MSG_CNT; j++) {
 			tgfs_chats[i].msgs[j].text[0] = '\0';
@@ -140,8 +141,9 @@ ssize_t tgfs_chat_snapshot(struct tgfs_chat *chat, char *out, size_t out_size)
 
 	start_idx = tgfs_chat_start_idx(chat);
 
-	msg_to_show = chat->msg_count < TGFS_READ_MSG_LIMIT ?
-		      chat->msg_count : TGFS_READ_MSG_LIMIT;
+    size_t curr_limit = chat->read_limit;
+	msg_to_show = chat->msg_count < curr_limit ?
+		      chat->msg_count : curr_limit;
 
 	first_msg = chat->msg_count - msg_to_show;
 
@@ -211,4 +213,87 @@ ssize_t tgfs_chat_snapshot(struct tgfs_chat *chat, char *out, size_t out_size)
 
 	mutex_unlock(&chat->lock);
 	return rendered;
+}
+
+
+//
+// ioctl stuff
+//
+
+
+int tgfs_chat_clear(struct tgfs_chat *chat)
+{
+	if (!chat) {
+        return -EINVAL;
+    }
+
+	mutex_lock(&chat->lock);
+
+	for (int i = 0; i < TGFS_MAX_MSG_CNT; i++) {
+		chat->msgs[i].text[0] = '\0';
+		chat->msgs[i].len = 0;
+		chat->msgs[i].ts = 0;
+	}
+
+	chat->msg_count = 0;
+	chat->next_idx = 0;
+
+	pr_debug("[tgfs] chat_clear: chat=%d cleared\n", chat->id);
+
+	mutex_unlock(&chat->lock);
+	return 0;
+}
+
+int tgfs_chat_get_msg_count(struct tgfs_chat *chat, size_t *out_count)
+{
+	if (!chat || !out_count) {
+        return -EINVAL;
+    }
+
+	mutex_lock(&chat->lock);
+	*out_count = chat->msg_count;
+	mutex_unlock(&chat->lock);
+
+	return 0;
+}
+
+int tgfs_chat_get_read_limit(struct tgfs_chat *chat, size_t *out_limit)
+{
+	if (!chat || !out_limit) {
+        return -EINVAL;
+    }
+
+	mutex_lock(&chat->lock);
+	*out_limit = chat->read_limit;
+	mutex_unlock(&chat->lock);
+
+	return 0;
+}
+
+int tgfs_chat_set_read_limit(struct tgfs_chat *chat, size_t new_limit)
+{
+	if (!chat) {
+        return -EINVAL;
+    }
+
+	/*
+	 * 0 запрещаем: иначе read() станет бессмысленным.
+	 * Больше TGFS_MAX_MSG_CNT тоже не нужно.
+	 */
+	if (new_limit == 0 || new_limit > TGFS_MAX_MSG_CNT) {
+        return -EINVAL;
+    }
+
+	mutex_lock(&chat->lock);
+	chat->read_limit = new_limit;
+
+	pr_debug(
+        "[tgfs] chat_set_read_limit: chat=%d new_limit=%zu\n",
+		chat->id,
+        new_limit
+    );
+
+	mutex_unlock(&chat->lock);
+
+	return 0;
 }

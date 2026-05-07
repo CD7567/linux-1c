@@ -6,6 +6,7 @@
 
 #include "telegramfs/device.h"
 #include "telegramfs/chat.h"
+#include "telegramfs/ioctl.h"
 
 static int tgfs_open(struct inode *inode, struct file *file)
 {
@@ -199,10 +200,73 @@ static ssize_t tgfs_write(struct file *file, const char __user *buf, size_t coun
 	return count;
 }
 
+static long tgfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+{
+	struct tgfs_chat *chat = file->private_data;
+	size_t value;
+	int err;
+
+	if (!chat)
+		return -EINVAL;
+
+	pr_debug(
+        "[tgfs] ioctl: chat=%d cmd=0x%x arg=0x%lx\n",
+		chat->id, cmd, arg
+    );
+
+	switch (cmd) {
+	case TGFS_IOCTL_GET_MSG_COUNT:
+		err = tgfs_chat_get_msg_count(chat, &value);
+		if (err < 0)
+			return err;
+
+		if (copy_to_user((size_t __user *)arg, &value, sizeof(value)))
+			return -EFAULT;
+
+		pr_debug("[tgfs] ioctl: GET_MSG_COUNT=%zu\n", value);
+		return 0;
+
+	case TGFS_IOCTL_CLEAR_CHAT:
+		err = tgfs_chat_clear(chat);
+		if (err < 0)
+			return err;
+
+		pr_debug("[tgfs] ioctl: CLEAR_CHAT done\n");
+		return 0;
+
+	case TGFS_IOCTL_GET_READ_LIMIT:
+		err = tgfs_chat_get_read_limit(chat, &value);
+		if (err < 0)
+			return err;
+
+		if (copy_to_user((size_t __user *)arg, &value, sizeof(value)))
+			return -EFAULT;
+
+		pr_debug("[tgfs] ioctl: GET_READ_LIMIT=%zu\n", value);
+		return 0;
+
+	case TGFS_IOCTL_SET_READ_LIMIT:
+		if (copy_from_user((void *)&value, (size_t __user *)arg, sizeof(value)))
+			return -EFAULT;
+
+		err = tgfs_chat_set_read_limit(chat, value);
+		if (err < 0)
+			return err;
+
+		pr_debug("[tgfs] ioctl: SET_READ_LIMIT=%zu\n", value);
+		return 0;
+
+	default:
+		pr_debug("[tgfs] ioctl: unsupported cmd=0x%x\n", cmd);
+		return -ENOTTY;
+	}
+}
+
 struct file_operations tgfs_fops = {
 	.owner = THIS_MODULE,
 	.open = tgfs_open,
 	.release = tgfs_release,
 	.read = tgfs_read,
 	.write = tgfs_write,
+    .unlocked_ioctl = tgfs_ioctl,
 };
