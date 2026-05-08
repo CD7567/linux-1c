@@ -45,4 +45,4 @@ KDE.
 
 ## Task1: telegramfs
 - [Условие](task1/TASK.md)
-- [Заметки по реализации](task1/README.md)
+- [Отчет](task1/README.md)
