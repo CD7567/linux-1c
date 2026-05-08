@@ -4,15 +4,15 @@
 
 #include "telegramfs/core.h"
 #include "telegramfs/device.h"
-#include "telegramfs/chat.h"
+#include "telegramfs/chat_registry.h"
 
 int tgfs_module_init(void)
 {
     int err;
 
-    pr_debug("[tgfs] starting chat store init\n");
+    pr_debug("[tgfs] starting chat registry init\n");
 
-	err = tgfs_chat_init();
+	err = tgfs_chat_registry_init();
 	if (err < 0) {
         return err;
     }
@@ -21,7 +21,7 @@ int tgfs_module_init(void)
 
 	err = tgfs_chrdev_init();
 	if (err < 0) {
-		tgfs_chat_exit();
+		tgfs_chat_registry_exit();
 		return err;
 	}
 
@@ -35,8 +35,8 @@ void tgfs_module_exit(void)
     pr_debug("[tgfs] starting chrdev destroy\n");
     tgfs_chrdev_exit();
 
-    pr_debug("[tgfs] starting chat store destroy\n");
-    tgfs_chat_exit();
+    pr_debug("[tgfs] starting chat registry destroy\n");
+    tgfs_chat_registry_exit();
 
 	pr_info("[tgfs] module unloaded\n");
 }

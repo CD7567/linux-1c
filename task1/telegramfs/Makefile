@@ -6,10 +6,11 @@ CFLAGS_TGCTL := -Wall -Wextra -O2 -I$(PWD)/include
 
 obj-m := tgfs.o
 ccflags-y := -I$(src)/include
-tgfs-y := src/core/init.o       \
-          src/device/fops.o     \
-		  src/device/chrdev.o   \
-		  src/chat/chat_store.o
+tgfs-y := src/core/init.o            \
+          src/device/fops.o          \
+		  src/device/chrdev.o        \
+		  src/chat/chat.o            \
+		  src/chat/chat_registry.o
 
 ifneq ($(DEBUG),)
     ccflags-y += -DDEBUG

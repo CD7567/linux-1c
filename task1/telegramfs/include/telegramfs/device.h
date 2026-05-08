@@ -3,6 +3,8 @@
 
 #include <linux/fs.h>
 
+#include "telegramfs/chat.h"
+
 /*
  * Available chrdev operations
  */
@@ -17,5 +19,15 @@ int tgfs_chrdev_init(void);
  * Destroy chrdev
  */
 void tgfs_chrdev_exit(void);
+
+/*
+ * Create new chrdev for this chat 
+ */
+int tgfs_chrdev_create_chat_device(struct tgfs_chat *chat);
+
+/*
+ * Destroy chrdev for this chat 
+ */
+void tgfs_chrdev_destroy_chat_device(struct tgfs_chat *chat);
 
 #endif /* TELEGRAMFS_DEVICE_H */

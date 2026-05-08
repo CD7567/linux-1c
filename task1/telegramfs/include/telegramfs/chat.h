@@ -4,10 +4,12 @@
 #include <linux/mutex.h>
 #include <linux/time64.h>
 
+#include "telegramfs/ioctl.h"
+
 /*
  * In-memory chat store limit
  */
-#define TGFS_MAX_CHATS 3
+#define TGFS_MAX_CHATS 128
 
 /*
  * Limit of messages in a single chat
@@ -32,7 +34,7 @@
 /*
  * Size of snapshot buffer
  */
-#define TGFS_SNAPSHOT_BUF_SIZE (TGFS_MAX_MSG_CNT * TGFS_MAX_RENDERED_MSG_SIZE)
+#define TGFS_CHAT_SNAPSHOT_BUF_SIZE (TGFS_MAX_MSG_CNT * TGFS_MAX_RENDERED_MSG_SIZE)
 
 /*
  * Chat message interface
@@ -48,27 +50,18 @@ struct tgfs_msg {
  */
 struct tgfs_chat {
 	int id;
+	int minor;
+	char name[TGFS_MAX_CHAT_NAME_LEN];
+	struct device *dev;
+
 	struct mutex lock;
+	struct list_head link;
+
 	struct tgfs_msg msgs[TGFS_MAX_MSG_CNT];
 	size_t msg_count;
 	size_t next_idx;
-    size_t read_limit;
+	size_t read_limit;
 };
-
-/*
- * In-memory chat store
- */
-extern struct tgfs_chat tgfs_chats[TGFS_MAX_CHATS];
-
-/*
- * Initialize chat store
- */
-int tgfs_chat_init(void);
-
-/*
- * Destroy chat store
- */
-void tgfs_chat_exit(void);
 
 /*
  * Push message into a chat.

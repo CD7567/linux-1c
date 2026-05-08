@@ -6,19 +6,40 @@
 
 #include "telegramfs/device.h"
 #include "telegramfs/chat.h"
+#include "telegramfs/chat_registry.h"
 #include "telegramfs/ioctl.h"
+
+static bool tgfs_is_control_file(struct file *file)
+{
+	return iminor(file_inode(file)) == TGFS_CONTROL_MINOR;
+}
+
+static void tgfs_trim_newline(char *buf, size_t *len)
+{
+	while (*len > 0 && buf[*len - 1] == '\n') {
+		(*len)--;
+	}
+
+	buf[*len] = '\0';
+}
 
 static int tgfs_open(struct inode *inode, struct file *file)
 {
 	int minor = iminor(inode);
+	struct tgfs_chat *chat;
 
-    pr_debug("[tgfs] call tgfs_open: minor=%d\n", minor);
+	pr_debug("[tgfs] open: minor=%d\n", minor);
 
-	if (minor < 0 || minor >= TGFS_MAX_CHATS) {
-        return -ENODEV;
-    }
+	if (minor == TGFS_CONTROL_MINOR) {
+		file->private_data = NULL;
+		return 0;
+	}
 
-	file->private_data = &tgfs_chats[minor];
+	chat = tgfs_chat_registry_find_by_minor(minor);
+	if (!chat)
+		return -ENODEV;
+
+	file->private_data = chat;
 	return 0;
 }
 
@@ -28,179 +49,160 @@ static int tgfs_release(struct inode *inode, struct file *file)
 	return 0;
 }
 
-static ssize_t tgfs_normalize_user_message(
-    const char __user *buf,
-	size_t count,
-	char *kbuf,
-	size_t kbuf_size
-)
+static ssize_t tgfs_read(struct file *file, char __user *buf,
+			 size_t count, loff_t *ppos)
 {
-	if (!buf || !kbuf) {
-        return -EINVAL;
-    }
-		
-	if (count == 0) {
-        return 0;
-    }
-
-	if (count >= kbuf_size) {
-        return -EFBIG;
-    }
-
-	pr_debug(
-        "[tgfs] normalize: count=%zu kbuf_size=%zu\n",
-		count,
-        kbuf_size
-    );
-
-	if (copy_from_user(kbuf, buf, count)) {
-		pr_debug("[tgfs] normalize: copy_from_user failed\n");
-		return -EFAULT;
-	}
-
-	size_t msg_len = count;
-
-	if (msg_len > 0 && kbuf[msg_len - 1] == '\n') {
-		pr_debug("[tgfs] normalize: stripping trailing newline\n");
-		msg_len--;
-	}
-
-	if (msg_len == 0) {
-		pr_debug("[tgfs] normalize: message became empty\n");
-		return 0;
-	}
-
-	kbuf[msg_len] = '\0';
-
-	pr_debug(
-        "[tgfs] normalize: result len=%zu text=\"%.*s\"\n",
-		msg_len,
-        (int)msg_len, kbuf
-    );
-
-	return (ssize_t)msg_len;
-}
-
-static ssize_t tgfs_read(struct file *file, char __user *buf, size_t count, loff_t *ppos)
-{
-	struct tgfs_chat *chat = file->private_data;
-	char *snapshot;
-	ssize_t snapshot_len;
-	size_t available;
+	char *kbuf;
+	ssize_t len;
 	size_t to_copy;
 
-	if (!chat || !buf || !ppos) {
-        return -EINVAL;
-    }
+	if (count == 0)
+		return 0;
 
-	if (count == 0) {
-        return 0;
-    }
+	if (tgfs_is_control_file(file)) {
+		kbuf = kzalloc(TGFS_CHAT_REGISTRY_SNAPSHOT_BUF_SIZE, GFP_KERNEL);
+		if (!kbuf)
+			return -ENOMEM;
 
-	pr_debug(
-        "[tgfs] read: chat=%d count=%zu ppos=%lld\n",
-		chat->id,
-        count,
-        *ppos
-    );
+		len = tgfs_chat_registry_snapshot(kbuf, TGFS_CHAT_REGISTRY_SNAPSHOT_BUF_SIZE);
+	} else {
+		struct tgfs_chat *chat = file->private_data;
 
-	snapshot = kmalloc(TGFS_SNAPSHOT_BUF_SIZE, GFP_KERNEL);
-	if (!snapshot) {
-		pr_debug("[tgfs] read: kmalloc failed size=%lu\n", TGFS_SNAPSHOT_BUF_SIZE);
-		return -ENOMEM;
+		if (!chat)
+			return -EINVAL;
+
+		kbuf = kzalloc(TGFS_CHAT_SNAPSHOT_BUF_SIZE, GFP_KERNEL);
+		if (!kbuf)
+			return -ENOMEM;
+
+		len = tgfs_chat_snapshot(chat, kbuf, TGFS_CHAT_SNAPSHOT_BUF_SIZE);
 	}
 
-	snapshot_len = tgfs_chat_snapshot(chat, snapshot, TGFS_SNAPSHOT_BUF_SIZE);
-	if (snapshot_len < 0) {
-		pr_debug("[tgfs] read: snapshot failed err=%zd\n", snapshot_len);
-		kfree(snapshot);
-		return snapshot_len;
+	if (len < 0) {
+		kfree(kbuf);
+		return len;
 	}
 
-	pr_debug("[tgfs] read: snapshot_len=%zd\n", snapshot_len);
-
-	if (*ppos >= snapshot_len) {
-		pr_debug(
-            "[tgfs] read: EOF ppos=%lld snapshot_len=%zd\n",
-			*ppos,
-            snapshot_len
-        );
-		kfree(snapshot);
+	if (*ppos >= len) {
+		kfree(kbuf);
 		return 0;
 	}
 
-	available = snapshot_len - *ppos;
-	to_copy = min(count, available);
-
-	pr_debug(
-        "[tgfs] read: available=%zu to_copy=%zu\n",
-		available,
-        to_copy
-    );
-
-	if (copy_to_user(buf, snapshot + *ppos, to_copy)) {
-		pr_debug("[tgfs] read: copy_to_user failed to_copy=%zu\n", to_copy);
-		kfree(snapshot);
+	to_copy = min_t(size_t, count, len - *ppos);
+	if (copy_to_user(buf, kbuf + *ppos, to_copy)) {
+		kfree(kbuf);
 		return -EFAULT;
 	}
 
 	*ppos += to_copy;
-
-	pr_debug(
-        "[tgfs] read: done copied=%zu new_ppos=%lld\n",
-		to_copy,
-        *ppos
-    );
-
-	kfree(snapshot);
+	kfree(kbuf);
 	return to_copy;
 }
 
-static ssize_t tgfs_write(struct file *file, const char __user *buf, size_t count, loff_t *ppos)
+static ssize_t tgfs_write(struct file *file, const char __user *buf,
+			  size_t count, loff_t *ppos)
 {
-	struct tgfs_chat *chat = file->private_data;
 	char kbuf[TGFS_MAX_MSG_SIZE];
-	ssize_t msg_len;
+	size_t len;
 	int err;
 
-	if (!chat || !buf) {
-        return -EINVAL;
-    }
+	if (count == 0)
+		return 0;
 
-	pr_debug(
-        "[tgfs] write: chat=%d count=%zu ppos=%lld\n",
-		chat->id,
-        count,
-        ppos ? *ppos : 0
-    );
+	if (count >= TGFS_MAX_MSG_SIZE)
+		return -EFBIG;
 
-	msg_len = tgfs_normalize_user_message(buf, count, kbuf, sizeof(kbuf));
-	if (msg_len < 0) {
-		pr_debug("[tgfs] write: normalize failed err=%zd\n", msg_len);
-		return msg_len;
-	}
+	if (copy_from_user(kbuf, buf, count))
+		return -EFAULT;
 
-	if (msg_len == 0) {
-		pr_debug("[tgfs] write: empty normalized message, skip store\n");
+	len = count;
+	kbuf[len] = '\0';
+	tgfs_trim_newline(kbuf, &len);
+
+	if (tgfs_is_control_file(file)) {
+		struct tgfs_chat *chat;
+		const char *name = len > 0 ? kbuf : NULL;
+
+		err = tgfs_chat_create(name, &chat);
+		if (err < 0)
+			return err;
+
+		err = tgfs_chrdev_create_chat_device(chat);
+		if (err < 0)
+			return err;
+
+		return count;
+	} else {
+		struct tgfs_chat *chat = file->private_data;
+
+		if (!chat)
+			return -EINVAL;
+
+		if (len == 0)
+			return count;
+
+		err = tgfs_chat_push(chat, kbuf, len);
+		if (err < 0)
+			return err;
+
 		return count;
 	}
-
-	err = tgfs_chat_push(chat, kbuf, msg_len);
-	if (err < 0) {
-		pr_debug("[tgfs] write: chat_push failed err=%d\n", err);
-		return err;
-	}
-
-	pr_debug(
-        "[tgfs] write: stored chat=%d len=%zd\n",
-		chat->id,
-        msg_len
-    );
-
-	return count;
 }
 
-static long tgfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+static long tgfs_control_ioctl(struct file *file, unsigned int cmd,
+			       unsigned long arg)
+{
+	switch (cmd) {
+	case TGFS_IOCTL_CTL_CREATE_CHAT: {
+		struct tgfs_ctl_create_req req;
+		struct tgfs_chat *chat;
+		const char *name = NULL;
+		int err;
+
+		if (copy_from_user(&req, (void __user *)arg, sizeof(req)))
+			return -EFAULT;
+
+		req.name[TGFS_MAX_CHAT_NAME_LEN - 1] = '\0';
+		if (req.name[0] != '\0')
+			name = req.name;
+
+		err = tgfs_chat_create(name, &chat);
+		if (err < 0)
+			return err;
+
+		err = tgfs_chrdev_create_chat_device(chat);
+		if (err < 0)
+			return err;
+
+		req.chat_id = chat->id;
+		strscpy(req.device_name, chat->name, sizeof(req.device_name));
+
+		if (copy_to_user((void __user *)arg, &req, sizeof(req)))
+			return -EFAULT;
+
+		return 0;
+	}
+
+	case TGFS_IOCTL_CTL_GET_CHAT_COUNT: {
+		size_t count;
+		int err;
+
+		err = tgfs_chat_registry_get_chat_count(&count);
+		if (err < 0)
+			return err;
+
+		if (copy_to_user((void __user *)arg, &count, sizeof(count)))
+			return -EFAULT;
+
+		return 0;
+	}
+
+	default:
+		return -ENOTTY;
+	}
+}
+
+static long tgfs_chat_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 {
 	struct tgfs_chat *chat = file->private_data;
 	size_t value;
@@ -215,7 +217,7 @@ static long tgfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
     );
 
 	switch (cmd) {
-	case TGFS_IOCTL_GET_MSG_COUNT:
+	case TGFS_IOCTL_CHAT_GET_MSG_COUNT:
 		err = tgfs_chat_get_msg_count(chat, &value);
 		if (err < 0)
 			return err;
@@ -226,7 +228,7 @@ static long tgfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		pr_debug("[tgfs] ioctl: GET_MSG_COUNT=%zu\n", value);
 		return 0;
 
-	case TGFS_IOCTL_CLEAR_CHAT:
+	case TGFS_IOCTL_CHAT_CLEAR:
 		err = tgfs_chat_clear(chat);
 		if (err < 0)
 			return err;
@@ -234,7 +236,7 @@ static long tgfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		pr_debug("[tgfs] ioctl: CLEAR_CHAT done\n");
 		return 0;
 
-	case TGFS_IOCTL_GET_READ_LIMIT:
+	case TGFS_IOCTL_CHAT_GET_READ_LIMIT:
 		err = tgfs_chat_get_read_limit(chat, &value);
 		if (err < 0)
 			return err;
@@ -245,7 +247,7 @@ static long tgfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		pr_debug("[tgfs] ioctl: GET_READ_LIMIT=%zu\n", value);
 		return 0;
 
-	case TGFS_IOCTL_SET_READ_LIMIT:
+	case TGFS_IOCTL_CHAT_SET_READ_LIMIT:
 		if (copy_from_user((void *)&value, (size_t __user *)arg, sizeof(value)))
 			return -EFAULT;
 
@@ -260,6 +262,14 @@ static long tgfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		pr_debug("[tgfs] ioctl: unsupported cmd=0x%x\n", cmd);
 		return -ENOTTY;
 	}
+}
+
+static long tgfs_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
+{
+	if (tgfs_is_control_file(file))
+		return tgfs_control_ioctl(file, cmd, arg);
+
+	return tgfs_chat_ioctl(file, cmd, arg);
 }
 
 struct file_operations tgfs_fops = {

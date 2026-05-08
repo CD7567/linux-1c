@@ -6,34 +6,6 @@
 
 struct tgfs_chat tgfs_chats[TGFS_MAX_CHATS];
 
-int tgfs_chat_init(void)
-{
-	for (int i = 0; i < TGFS_MAX_CHATS; i++) {
-		tgfs_chats[i].id = i;
-		mutex_init(&tgfs_chats[i].lock);
-		tgfs_chats[i].msg_count = 0;
-		tgfs_chats[i].next_idx = 0;
-        tgfs_chats[i].read_limit = TGFS_READ_MSG_LIMIT_DEFAULT;
-
-		for (int j = 0; j < TGFS_MAX_MSG_CNT; j++) {
-			tgfs_chats[i].msgs[j].text[0] = '\0';
-			tgfs_chats[i].msgs[j].len = 0;
-		}
-	}
-
-	pr_debug("[tgfs] chat store initialized\n");
-	return 0;
-}
-
-void tgfs_chat_exit(void)
-{
-	for (int i = 0; i < TGFS_MAX_CHATS; i++) {
-        mutex_destroy(&tgfs_chats[i].lock);
-    }
-
-	pr_debug("[tgfs] chat store destroyed\n");
-}
-
 /*
  * Helper function to get index of the first message within defined limit
  */
