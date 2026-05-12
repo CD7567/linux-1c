@@ -46,7 +46,14 @@ KDE.
 ## Task1: telegramfs
 - [Условие](task1/TASK.md)
 - [Отчет](task1/README.md)
+- [Демо работы](task1/DEMO.md)
 
 ## Task2: vapa
 - [Условие](task2/TASK.md)
 - [Отчет](task2/README.md)
+- [Демо работы](task2/DEMO.md)
+
+## Task3: minifs
+- [Условие](task3/TASK.md)
+- [Отчет](task3/README.md)
+- [Демо работы](task3/DEMO.md)
