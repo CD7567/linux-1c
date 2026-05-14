@@ -1,10 +1,13 @@
 #include <linux/module.h>
 #include <linux/interrupt.h>
+#include <linux/workqueue.h>
 #include <asm/io.h>
 
 #define KBD_IRQ 1
 
 static int dev_id;
+static struct work_struct kb_work;
+static unsigned char pending_scancode;
 
 static const char *scancode_to_name(unsigned char code)
 {
@@ -106,21 +109,30 @@ static const char *scancode_to_name(unsigned char code)
     }
 }
 
-static irqreturn_t kb_irq(int irq, void *dev)
+static void kb_work_handler(struct work_struct *work)
 {
     unsigned char scancode;
     unsigned char code;
     bool pressed;
     const char *key_name;
 
-    scancode = inb(0x60);
+    scancode = pending_scancode;
 
     pressed = !(scancode & 0x80);
     code = scancode & 0x7f;
     key_name = scancode_to_name(code);
 
     pr_info("kbd_monitor: raw=0x%02x -> code=0x%02x type=%s key=%s\n",
-        scancode, code, pressed ? "press" : "release", key_name);
+            scancode, code, pressed ? "press" : "release", key_name);
+}
+
+static irqreturn_t kb_irq(int irq, void *dev)
+{
+    unsigned char scancode;
+
+    scancode = inb(0x60);
+    pending_scancode = scancode;
+    schedule_work(&kb_work);
 
     return IRQ_HANDLED;
 }
@@ -128,6 +140,8 @@ static irqreturn_t kb_irq(int irq, void *dev)
 static int __init kb_init(void)
 {
     int ret;
+
+    INIT_WORK(&kb_work, kb_work_handler);
 
     ret = request_irq(
         KBD_IRQ,
@@ -149,6 +163,7 @@ static int __init kb_init(void)
 
 static void __exit kb_exit(void)
 {
+    cancel_work_sync(&kb_work);
     free_irq(KBD_IRQ, &dev_id);
 
     pr_info("keyboard monitor unloaded\n");
@@ -158,3 +173,5 @@ module_init(kb_init);
 module_exit(kb_exit);
 
 MODULE_LICENSE("GPL");
+MODULE_AUTHOR("CD7567");
+MODULE_DESCRIPTION("Educational keyboard logger");
