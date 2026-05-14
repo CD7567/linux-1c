@@ -9,10 +9,15 @@ static int dev_id;
 static irqreturn_t kb_irq(int irq, void *dev)
 {
     unsigned char scancode;
+    unsigned char code;
+    bool pressed;
 
     scancode = inb(0x60);
+    pressed = !(scancode & 0x80);
+    code = scancode & 0x7f;    
 
-    pr_info("edu_kbd_monitor: scan=0x%x\n", scancode);
+    pr_info("kbd_monitor: raw=0x%02x -> code=0x%02x type=%s\n",
+        scancode, code, pressed ? "press" : "release");
 
     return IRQ_HANDLED;
 }
