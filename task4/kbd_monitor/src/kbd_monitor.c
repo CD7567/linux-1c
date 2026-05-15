@@ -2,17 +2,22 @@
 #include <linux/interrupt.h>
 #include <linux/workqueue.h>
 #include <linux/spinlock.h>
+#include <linux/time64.h>
 #include <asm/io.h>
 
 #define KBD_IRQ 1
 #define KBD_BUFFER_SIZE 128
 
+// IRQ
 static int dev_id;
+
+// Workqueue + ring buffer
 static struct work_struct kb_work;
 static spinlock_t buff_lock;
 
 struct kb_event {
     unsigned long scancode;
+    time64_t ts;
 };
 
 /* ------------------------------------------------------------------ */
@@ -24,7 +29,7 @@ static unsigned int ring_head;
 static unsigned int ring_tail;
 static unsigned int ring_count;
 
-static bool ring_push(unsigned char scancode)
+static bool ring_push(unsigned char scancode, time64_t ts)
 {
     unsigned long flags;
 
@@ -36,6 +41,7 @@ static bool ring_push(unsigned char scancode)
     }
 
     ring_buff[ring_head].scancode = scancode;
+    ring_buff[ring_head].ts = ts;
     ring_head = (ring_head + 1) % KBD_BUFFER_SIZE;
     ring_count++;
 
@@ -187,17 +193,20 @@ static void kb_work_handler(struct work_struct *work)
         code = scancode & 0x7f;
         key_name = scancode_to_name(code);
 
-        pr_info("kbd_monitor: raw=0x%02x -> code=0x%02x type=%s key=%s\n",
-                scancode, code, pressed ? "press" : "release", key_name);
+        pr_info("kbd_monitor: ts=%llu raw=0x%02x -> code=0x%02x type=%s key=%s\n",
+                event.ts, scancode, code, pressed ? "press" : "release", key_name);
     }
 }
 
 static irqreturn_t kb_irq(int irq, void *dev)
 {
     unsigned char scancode;
+    time64_t ts;
 
     scancode = inb(0x60);
-    ring_push(scancode);
+    ts = ktime_get_ns();;
+
+    ring_push(scancode, ts);
     schedule_work(&kb_work);
 
     return IRQ_HANDLED;
