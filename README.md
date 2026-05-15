@@ -57,3 +57,8 @@ KDE.
 - [Условие](task3/TASK.md)
 - [Отчет](task3/README.md)
 - [Демо работы](task3/DEMO.md)
+
+## Task4: kbd_monitor
+- [Условие](task4/TASK.md)
+- [Отчет](task4/README.md)
+- [Демо работы](task4/DEMO.md)
