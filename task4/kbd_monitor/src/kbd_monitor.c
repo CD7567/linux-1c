@@ -1,13 +1,72 @@
 #include <linux/module.h>
 #include <linux/interrupt.h>
 #include <linux/workqueue.h>
+#include <linux/spinlock.h>
 #include <asm/io.h>
 
 #define KBD_IRQ 1
+#define KBD_BUFFER_SIZE 128
 
 static int dev_id;
 static struct work_struct kb_work;
-static unsigned char pending_scancode;
+static spinlock_t buff_lock;
+
+struct kb_event {
+    unsigned long scancode;
+};
+
+/* ------------------------------------------------------------------ */
+/*                         RING BUFFER IMPL                           */
+/* ------------------------------------------------------------------ */
+
+static struct kb_event ring_buff[KBD_BUFFER_SIZE];
+static unsigned int ring_head;
+static unsigned int ring_tail;
+static unsigned int ring_count;
+
+static bool ring_push(unsigned char scancode)
+{
+    unsigned long flags;
+
+    spin_lock_irqsave(&buff_lock, flags);
+
+    if (ring_count == KBD_BUFFER_SIZE) {
+        ring_tail = (ring_tail + 1) % KBD_BUFFER_SIZE;
+        ring_count--;
+    }
+
+    ring_buff[ring_head].scancode = scancode;
+    ring_head = (ring_head + 1) % KBD_BUFFER_SIZE;
+    ring_count++;
+
+    spin_unlock_irqrestore(&buff_lock, flags);
+
+    return true;
+}
+
+static bool ring_pop(struct kb_event *event)
+{
+    unsigned long flags;
+
+    spin_lock_irqsave(&buff_lock, flags);
+
+    if (ring_count == 0) {
+        spin_unlock_irqrestore(&buff_lock, flags);
+        return false;
+    }
+
+    *event = ring_buff[ring_tail];
+    ring_tail = (ring_tail + 1) % KBD_BUFFER_SIZE;
+    ring_count--;
+
+    spin_unlock_irqrestore(&buff_lock, flags);
+
+    return true;
+}
+
+/* ------------------------------------------------------------------ */
+/*                          KEYCODE TABLE                             */
+/* ------------------------------------------------------------------ */
 
 static const char *scancode_to_name(unsigned char code)
 {
@@ -109,21 +168,28 @@ static const char *scancode_to_name(unsigned char code)
     }
 }
 
+/* ------------------------------------------------------------------ */
+/*                           IRQ HANDLER                              */
+/* ------------------------------------------------------------------ */
+
 static void kb_work_handler(struct work_struct *work)
 {
-    unsigned char scancode;
-    unsigned char code;
-    bool pressed;
-    const char *key_name;
+    struct kb_event event;
 
-    scancode = pending_scancode;
+    while (ring_pop(&event)) {
+        unsigned char scancode;
+        unsigned char code;
+        bool pressed;
+        const char *key_name;
 
-    pressed = !(scancode & 0x80);
-    code = scancode & 0x7f;
-    key_name = scancode_to_name(code);
+        scancode = event.scancode;
+        pressed = !(scancode & 0x80);
+        code = scancode & 0x7f;
+        key_name = scancode_to_name(code);
 
-    pr_info("kbd_monitor: raw=0x%02x -> code=0x%02x type=%s key=%s\n",
-            scancode, code, pressed ? "press" : "release", key_name);
+        pr_info("kbd_monitor: raw=0x%02x -> code=0x%02x type=%s key=%s\n",
+                scancode, code, pressed ? "press" : "release", key_name);
+    }
 }
 
 static irqreturn_t kb_irq(int irq, void *dev)
@@ -131,16 +197,24 @@ static irqreturn_t kb_irq(int irq, void *dev)
     unsigned char scancode;
 
     scancode = inb(0x60);
-    pending_scancode = scancode;
+    ring_push(scancode);
     schedule_work(&kb_work);
 
     return IRQ_HANDLED;
 }
 
+/* ------------------------------------------------------------------ */
+/*                        MODULE INIT/EXIT                            */
+/* ------------------------------------------------------------------ */
+
 static int __init kb_init(void)
 {
     int ret;
 
+    ring_head = 0;
+    ring_tail = 0;
+    ring_count = 0;
+    spin_lock_init(&buff_lock);
     INIT_WORK(&kb_work, kb_work_handler);
 
     ret = request_irq(
