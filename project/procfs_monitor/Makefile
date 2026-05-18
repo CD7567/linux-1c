@@ -8,6 +8,10 @@ ccflags-y := -I$(src)/include
 procfs_monitor-y := src/core/init.o      \
                     src/procfs/procfs.o
 
+ifneq ($(DEBUG),)
+    ccflags-y += -DDEBUG
+endif
+
 .PHONY: default module clean
 
 default: module

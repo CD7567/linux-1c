@@ -3,6 +3,13 @@
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <linux/module.h>
+#include <linux/mm.h>
+#include <linux/swap.h>
+#include <linux/sysinfo.h>
+#include <linux/jiffies.h>
+#include <linux/kernel_stat.h>
+#include <linux/cpumask.h>
+#include <linux/math64.h>
 
 #include "procfs_monitor/procfs.h"
 
@@ -17,6 +24,10 @@ static struct proc_dir_entry *procfs_monitor_root;
 static struct proc_dir_entry *procfs_monitor_system;
 static struct proc_dir_entry *procfs_monitor_proc_dir;
 static struct proc_dir_entry *procfs_monitor_register;
+
+static u64 prev_total_cpu_time = 0;
+static u64 prev_idle_cpu_time = 0;
+static DEFINE_MUTEX(procfs_monitor_system_lock);
 
 static LIST_HEAD(procfs_monitor_pid_entries);
 static DEFINE_MUTEX(procfs_monitor_pid_lock);
@@ -45,9 +56,120 @@ static struct procfs_monitor_pid_entry *procfs_monitor_find_pid_entry(pid_t pid)
     return NULL;
 }
 
+static void procfs_monitor_get_cpu_times(u64 *total, u64 *idle)
+{
+    int cpu;
+    u64 total_time = 0;
+    u64 idle_time = 0;
+
+    for_each_possible_cpu(cpu) {
+        struct kernel_cpustat kcpustat;
+        u64 user, nice, system, idle_v, iowait, irq, softirq, steal;
+
+        kcpustat = kcpustat_cpu(cpu);
+
+        user    = kcpustat.cpustat[CPUTIME_USER];
+        nice    = kcpustat.cpustat[CPUTIME_NICE];
+        system  = kcpustat.cpustat[CPUTIME_SYSTEM];
+        idle_v  = kcpustat.cpustat[CPUTIME_IDLE];
+        iowait  = kcpustat.cpustat[CPUTIME_IOWAIT];
+        irq     = kcpustat.cpustat[CPUTIME_IRQ];
+        softirq = kcpustat.cpustat[CPUTIME_SOFTIRQ];
+        steal   = kcpustat.cpustat[CPUTIME_STEAL];
+
+        total_time += user + nice + system + idle_v + iowait + irq + softirq + steal;
+        idle_time  += idle_v + iowait;
+    }
+
+    *total = total_time;
+    *idle = idle_time;
+}
+
 static int procfs_monitor_system_show(struct seq_file *m, void *v)
 {
-    seq_puts(m, "system\n");
+    struct sysinfo info;
+    struct task_struct *task;
+    u64 mem_total_kb;
+    u64 mem_available_kb;
+    u64 mem_used_kb;
+    u64 total_cpu_time;
+    u64 idle_cpu_time;
+    u64 delta_total;
+    u64 delta_idle;
+    u64 busy_delta;
+    unsigned int cpu_usage_x10 = 0;
+    unsigned int cpu_usage_int;
+    unsigned int cpu_usage_frac;
+    unsigned long uptime_sec;
+    unsigned long tasks_total = 0;
+
+    uptime_sec = jiffies / HZ;
+
+    si_meminfo(&info);
+    mem_total_kb = ((u64)info.totalram * info.mem_unit) / 1024;
+    mem_available_kb = ((u64)si_mem_available() * PAGE_SIZE) / 1024;
+    mem_used_kb = mem_total_kb - mem_available_kb;
+
+
+    for_each_process(task)
+        tasks_total++;
+
+    procfs_monitor_get_cpu_times(&total_cpu_time, &idle_cpu_time);
+
+    mutex_lock(&procfs_monitor_system_lock);
+
+    if (prev_total_cpu_time != 0 &&
+        total_cpu_time >= prev_total_cpu_time &&
+        idle_cpu_time >= prev_idle_cpu_time) {
+
+        delta_total = total_cpu_time - prev_total_cpu_time;
+        delta_idle  = idle_cpu_time - prev_idle_cpu_time;
+        busy_delta  = delta_total - delta_idle;
+
+        if (delta_total > 0)
+            cpu_usage_x10 = (unsigned int)div64_u64(busy_delta * 1000, delta_total);
+    } else {
+        cpu_usage_x10 = 0;
+    }
+
+    prev_total_cpu_time = total_cpu_time;
+    prev_idle_cpu_time  = idle_cpu_time;
+
+    mutex_unlock(&procfs_monitor_system_lock);
+
+    cpu_usage_int  = cpu_usage_x10 / 10;
+    cpu_usage_frac = cpu_usage_x10 % 10;
+
+    /*
+     * Uptime in seconds since kernel startup
+     */
+    seq_printf(m, "uptime_sec: %lu\n", uptime_sec);
+
+    /*
+     * Total RAM in Kb
+     */
+    seq_printf(m, "mem_total_kb: %llu\n", mem_total_kb);
+
+    /*
+     * RAM available for allocation without swapping
+     */
+    seq_printf(m, "mem_available_kb: %llu\n", mem_available_kb);
+
+    /*
+     * RAM used in Kb
+     */
+    seq_printf(m, "mem_used_kb: %llu\n", mem_used_kb);
+
+    /*
+     * CPU usage (delta is since previous file open)
+     */
+    seq_printf(m, "cpu_usage_percent: %u.%u\n", cpu_usage_int, cpu_usage_frac);
+
+    /*
+     * Total processes (not threads!)
+     */
+    seq_printf(m, "tasks_total: %lu\n", tasks_total);
+
     return 0;
 }
 
