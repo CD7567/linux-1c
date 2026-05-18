@@ -104,6 +104,12 @@ static int procfs_monitor_system_show(struct seq_file *m, void *v)
     unsigned int cpu_usage_frac;
     unsigned long uptime_sec;
     unsigned long tasks_total = 0;
+    unsigned long tasks_running = 0;
+    unsigned long tasks_sleeping = 0;
+    unsigned long tasks_zombie = 0;
+    unsigned long tasks_stopped = 0;
+    unsigned long tasks_sleeping_uninterruptible = 0;
+    unsigned long tasks_other = 0;
 
     uptime_sec = jiffies / HZ;
 
@@ -113,8 +119,23 @@ static int procfs_monitor_system_show(struct seq_file *m, void *v)
     mem_used_kb = mem_total_kb - mem_available_kb;
 
 
-    for_each_process(task)
+    for_each_process(task) {
         tasks_total++;
+
+        if (task_is_running(task)) {
+            tasks_running++;
+        } else if (task->exit_state & EXIT_ZOMBIE) {
+            tasks_zombie++;
+        } else if (task->__state & TASK_INTERRUPTIBLE) {
+            tasks_sleeping++;
+        } else if (task->__state & TASK_UNINTERRUPTIBLE) {
+            tasks_sleeping_uninterruptible++;
+        } else if (task->__state & __TASK_STOPPED) {
+            tasks_stopped++;
+        } else {
+            tasks_other++;
+        }
+    }
 
     procfs_monitor_get_cpu_times(&total_cpu_time, &idle_cpu_time);
 
@@ -172,6 +193,16 @@ static int procfs_monitor_system_show(struct seq_file *m, void *v)
      */
     seq_printf(m, "tasks_total: %lu\n", tasks_total);
 
+    /*
+     * Process stat by state
+     */
+    seq_printf(m, "tasks_running: %lu\n", tasks_running);
+    seq_printf(m, "tasks_sleeping: %lu\n", tasks_sleeping);
+    seq_printf(m, "tasks_zombie: %lu\n", tasks_zombie);
+    seq_printf(m, "tasks_stopped: %lu\n", tasks_stopped);
+    seq_printf(m, "tasks_sleeping_uninterruptible: %lu\n", tasks_sleeping_uninterruptible);
+    seq_printf(m, "tasks_other: %lu\n", tasks_other);
+
     return 0;
 }
 
@@ -196,7 +227,7 @@ static const char *procfs_monitor_task_state_to_str(struct task_struct *task)
         return "sleeping";
 
     if (task->__state & TASK_UNINTERRUPTIBLE)
-        return "disk-sleep";
+        return "sleeping-uninterruptible";
 
     if (task->__state & __TASK_STOPPED)
         return "stopped";
