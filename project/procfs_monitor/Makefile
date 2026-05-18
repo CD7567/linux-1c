@@ -5,7 +5,8 @@ CC ?= gcc
 
 obj-m := procfs_monitor.o
 ccflags-y := -I$(src)/include
-procfs_monitor-y := src/core/init.o
+procfs_monitor-y := src/core/init.o      \
+                    src/procfs/procfs.o
 
 .PHONY: default module clean
 
