@@ -10,6 +10,8 @@
 #include <linux/kernel_stat.h>
 #include <linux/cpumask.h>
 #include <linux/math64.h>
+#include <linux/pid.h>
+#include <linux/sched/cputime.h>
 
 #include "procfs_monitor/procfs.h"
 
@@ -185,19 +187,186 @@ static const struct proc_ops procfs_monitor_system_ops = {
     .proc_release = single_release,
 };
 
+static const char *procfs_monitor_task_state_to_str(struct task_struct *task)
+{
+    if (task_is_running(task))
+        return "running";
+
+    if (task->__state & TASK_INTERRUPTIBLE)
+        return "sleeping";
+
+    if (task->__state & TASK_UNINTERRUPTIBLE)
+        return "disk-sleep";
+
+    if (task->__state & __TASK_STOPPED)
+        return "stopped";
+
+    if (task->__state & __TASK_TRACED)
+        return "tracing-stop";
+
+    if (task->exit_state & EXIT_ZOMBIE)
+        return "zombie";
+
+    if (task->exit_state & EXIT_DEAD)
+        return "dead";
+
+#ifdef TASK_PARKED
+    if (task->__state & TASK_PARKED)
+        return "parked";
+#endif
+
+#ifdef TASK_IDLE
+    if (task->__state & TASK_IDLE)
+        return "idle";
+#endif
+
+    return "unknown";
+}
+
+static struct task_struct *procfs_monitor_get_task_by_pid(pid_t pid)
+{
+    struct pid *kpid;
+    struct task_struct *task;
+
+    kpid = find_get_pid(pid);
+    if (!kpid)
+        return NULL;
+
+    task = get_pid_task(kpid, PIDTYPE_PID);
+
+    put_pid(kpid);
+    return task;
+}
+
+static int procfs_monitor_get_task_memory(struct task_struct *task,
+                                          u64 *vm_size_kb,
+                                          u64 *rss_kb)
+{
+    struct mm_struct *mm;
+    u64 vm_pages;
+    u64 rss_pages;
+
+    mm = get_task_mm(task);
+    if (!mm) {
+        *vm_size_kb = 0;
+        *rss_kb = 0;
+        return 0;
+    }
+
+    vm_pages = (u64)mm->total_vm;
+    rss_pages = (u64)get_mm_rss(mm);
+
+    mmput(mm);
+
+    *vm_size_kb = (vm_pages * PAGE_SIZE) / 1024;
+    *rss_kb = (rss_pages * PAGE_SIZE) / 1024;
+
+    return 0;
+}
+
+static void procfs_monitor_get_task_cputime(struct task_struct *task,
+                                            u64 *user_ticks,
+                                            u64 *system_ticks,
+                                            u64 *total_ticks)
+{
+    u64 utime;
+    u64 stime;
+
+    utime = (u64)task->utime;
+    stime = (u64)task->stime;
+
+    *user_ticks = utime;
+    *system_ticks = stime;
+    *total_ticks = utime + stime;
+}
+
 static int procfs_monitor_pid_show(struct seq_file *m, void *v)
 {
     struct procfs_monitor_pid_entry *entry = m->private;
+    struct task_struct *task;
+    pid_t pid;
+    pid_t ppid;
+    const char *state_str;
+    int threads;
+    u64 vm_size_kb;
+    u64 rss_kb;
+    u64 cpu_user_ticks;
+    u64 cpu_system_ticks;
+    u64 cpu_total_ticks;
 
     if (!entry)
         return -EINVAL;
 
-    if (!procfs_monitor_pid_exists(entry->pid)) {
-        seq_puts(m, "process-not-found\n");
-        return 0;
-    }
+    pid = entry->pid;
 
-    seq_printf(m, "%d\n", entry->pid);
+    task = procfs_monitor_get_task_by_pid(pid);
+    if (!task)
+        return -ESRCH;
+
+    ppid = task_ppid_nr(task);
+
+    state_str = procfs_monitor_task_state_to_str(task);
+
+    threads = get_nr_threads(task);
+
+    procfs_monitor_get_task_memory(task, &vm_size_kb, &rss_kb);
+
+    procfs_monitor_get_task_cputime(task,
+                                    &cpu_user_ticks,
+                                    &cpu_system_ticks,
+                                    &cpu_total_ticks);
+
+    /*
+     * Process id
+     */
+    seq_printf(m, "pid: %d\n", pid);
+
+    /*
+     * Parent process id
+     */
+    seq_printf(m, "ppid: %d\n", ppid);
+
+    /*
+     * Process short name
+     */
+    seq_printf(m, "comm: %s\n", task->comm);
+
+    /*
+     * Human-readable process state
+     */
+    seq_printf(m, "state: %s\n", state_str);
+
+    /*
+     * Thread count in process thread group
+     */
+    seq_printf(m, "threads: %d\n", threads);
+
+    /*
+     * Process VMA size
+     */
+    seq_printf(m, "vm_size_kb: %llu\n", vm_size_kb);
+
+    /*
+     * Physical RAM usage
+     */
+    seq_printf(m, "rss_kb: %llu\n", rss_kb);
+
+    /*
+     * User-space CPU time
+     */
+    seq_printf(m, "cpu_time_user_ticks: %llu\n", cpu_user_ticks);
+
+    /*
+     * Kernel-space CPU time
+     */
+    seq_printf(m, "cpu_time_system_ticks: %llu\n", cpu_system_ticks);
+
+    /*
+     * Total CPU time
+     */
+    seq_printf(m, "cpu_time_total_ticks: %llu\n", cpu_total_ticks);
+
+    put_task_struct(task);
     return 0;
 }
 
