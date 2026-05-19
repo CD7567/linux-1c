@@ -13,6 +13,8 @@
 #include <linux/pid.h>
 #include <linux/sched/cputime.h>
 
+#include "metric_backend/metric_backend.h"
+
 #include "procfs_monitor/procfs.h"
 
 struct procfs_monitor_pid_entry {
@@ -27,24 +29,177 @@ static struct proc_dir_entry *procfs_monitor_system;
 static struct proc_dir_entry *procfs_monitor_proc_dir;
 static struct proc_dir_entry *procfs_monitor_register;
 
-static u64 prev_total_cpu_time = 0;
-static u64 prev_idle_cpu_time = 0;
-static DEFINE_MUTEX(procfs_monitor_system_lock);
-
 static LIST_HEAD(procfs_monitor_pid_entries);
 static DEFINE_MUTEX(procfs_monitor_pid_lock);
 
-static bool procfs_monitor_pid_exists(pid_t pid)
+
+/* ------------------------------------------------------------------ */
+/*                        PROCFS SYSTEM NODE                          */
+/* ------------------------------------------------------------------ */
+
+
+static int procfs_monitor_system_show(struct seq_file *m, void *v)
 {
-    struct pid *kpid;
+    struct procfs_monitor_system_snapshot snap;
+    unsigned int cpu_usage_int;
+    unsigned int cpu_usage_frac;
+    int ret;
 
-    kpid = find_get_pid(pid);
-    if (!kpid)
-        return false;
+    ret = procfs_monitor_collect_system_snapshot(&snap);
+    if (ret)
+        return ret;
 
-    put_pid(kpid);
-    return true;
+    cpu_usage_int = snap.cpu_usage_x10 / 10;
+    cpu_usage_frac = snap.cpu_usage_x10 % 10;
+
+    /*
+     * Uptime in seconds since kernel startup
+     */
+    seq_printf(m, "uptime_sec: %lu\n", snap.uptime_sec);
+
+    /*
+     * Total RAM in Kb
+     */
+    seq_printf(m, "mem_total_kb: %llu\n", snap.mem_total_kb);
+
+    /*
+     * RAM available for allocation without swapping
+     */
+    seq_printf(m, "mem_available_kb: %llu\n", snap.mem_available_kb);
+
+    /*
+     * RAM used in Kb
+     */
+    seq_printf(m, "mem_used_kb: %llu\n", snap.mem_used_kb);
+
+    /*
+     * CPU usage (delta is since previous file open)
+     */
+    seq_printf(m, "cpu_usage_percent: %u.%u\n", cpu_usage_int, cpu_usage_frac);
+
+    /*
+     * Total processes (not threads!)
+     */
+    seq_printf(m, "tasks_total: %lu\n", snap.tasks_total);
+
+    /*
+     * Process stat by state
+     */
+    seq_printf(m, "tasks_runnable: %lu\n", snap.tasks_runnable);
+    seq_printf(m, "tasks_interruptible_sleep: %lu\n", snap.tasks_interruptible_sleep);
+    seq_printf(m, "tasks_uninterruptible_sleep: %lu\n", snap.tasks_uninterruptible_sleep);
+    seq_printf(m, "tasks_stopped: %lu\n", snap.tasks_stopped);
+    seq_printf(m, "tasks_zombie: %lu\n", snap.tasks_zombie);
+    seq_printf(m, "tasks_other: %lu\n", snap.tasks_other);
+
+    return 0;
 }
+
+static int procfs_monitor_system_open(struct inode *inode, struct file *file)
+{
+    return single_open(file, procfs_monitor_system_show, NULL);
+}
+
+
+static const struct proc_ops procfs_monitor_system_ops = {
+    .proc_open    = procfs_monitor_system_open,
+    .proc_read    = seq_read,
+    .proc_lseek   = seq_lseek,
+    .proc_release = single_release,
+};
+
+
+/* ------------------------------------------------------------------ */
+/*                          PROCFS PID NODE                           */
+/* ------------------------------------------------------------------ */
+
+
+static int procfs_monitor_pid_show(struct seq_file *m, void *v)
+{
+    struct procfs_monitor_pid_entry *entry = m->private;
+    struct procfs_monitor_process_snapshot snap;
+    int ret;
+
+    if (!entry)
+        return -EINVAL;
+
+    ret = procfs_monitor_collect_process_snapshot(entry->pid, &snap);
+    if (ret)
+        return ret;
+
+    /*
+     * Process id
+     */
+    seq_printf(m, "pid: %d\n", snap.pid);
+
+    /*
+     * Parent process id
+     */
+    seq_printf(m, "ppid: %d\n", snap.ppid);
+
+    /*
+     * Process short name
+     */
+    seq_printf(m, "comm: %s\n", snap.comm);
+
+    /*
+     * Human-readable process state
+     */
+    seq_printf(m, "state: %s\n", snap.state);
+
+    /*
+     * Thread count in process thread group
+     */
+    seq_printf(m, "threads: %d\n", snap.threads);
+
+    /*
+     * Process VMA size
+     */
+    seq_printf(m, "vm_size_kb: %llu\n", snap.vm_size_kb);
+
+    /*
+     * Physical RAM usage
+     */
+    seq_printf(m, "rss_kb: %llu\n", snap.rss_kb);
+
+    /*
+     * User-space CPU time
+     */
+    seq_printf(m, "cpu_time_user_ticks: %llu\n", snap.cpu_time_user_ticks);
+
+    /*
+     * Kernel-space CPU time
+     */
+    seq_printf(m, "cpu_time_system_ticks: %llu\n", snap.cpu_time_system_ticks);
+
+    /*
+     * Total CPU time
+     */
+    seq_printf(m, "cpu_time_total_ticks: %llu\n", snap.cpu_time_total_ticks);
+
+    return 0;
+}
+
+static int procfs_monitor_pid_open(struct inode *inode, struct file *file)
+{
+    void *data = pde_data(inode);
+
+    return single_open(file, procfs_monitor_pid_show, data);
+}
+
+
+static const struct proc_ops procfs_monitor_pid_ops = {
+    .proc_open    = procfs_monitor_pid_open,
+    .proc_read    = seq_read,
+    .proc_lseek   = seq_lseek,
+    .proc_release = single_release,
+};
+
+
+/* ------------------------------------------------------------------ */
+/*                         PROCFS MANAGEMENT                          */
+/* ------------------------------------------------------------------ */
+
 
 static struct procfs_monitor_pid_entry *procfs_monitor_find_pid_entry(pid_t pid)
 {
@@ -57,363 +212,6 @@ static struct procfs_monitor_pid_entry *procfs_monitor_find_pid_entry(pid_t pid)
 
     return NULL;
 }
-
-static void procfs_monitor_get_cpu_times(u64 *total, u64 *idle)
-{
-    int cpu;
-    u64 total_time = 0;
-    u64 idle_time = 0;
-
-    for_each_possible_cpu(cpu) {
-        struct kernel_cpustat kcpustat;
-        u64 user, nice, system, idle_v, iowait, irq, softirq, steal;
-
-        kcpustat = kcpustat_cpu(cpu);
-
-        user    = kcpustat.cpustat[CPUTIME_USER];
-        nice    = kcpustat.cpustat[CPUTIME_NICE];
-        system  = kcpustat.cpustat[CPUTIME_SYSTEM];
-        idle_v  = kcpustat.cpustat[CPUTIME_IDLE];
-        iowait  = kcpustat.cpustat[CPUTIME_IOWAIT];
-        irq     = kcpustat.cpustat[CPUTIME_IRQ];
-        softirq = kcpustat.cpustat[CPUTIME_SOFTIRQ];
-        steal   = kcpustat.cpustat[CPUTIME_STEAL];
-
-        total_time += user + nice + system + idle_v + iowait + irq + softirq + steal;
-        idle_time  += idle_v + iowait;
-    }
-
-    *total = total_time;
-    *idle = idle_time;
-}
-
-static int procfs_monitor_system_show(struct seq_file *m, void *v)
-{
-    struct sysinfo info;
-    struct task_struct *task;
-    u64 mem_total_kb;
-    u64 mem_available_kb;
-    u64 mem_used_kb;
-    u64 total_cpu_time;
-    u64 idle_cpu_time;
-    u64 delta_total;
-    u64 delta_idle;
-    u64 busy_delta;
-    unsigned int cpu_usage_x10 = 0;
-    unsigned int cpu_usage_int;
-    unsigned int cpu_usage_frac;
-    unsigned long uptime_sec;
-    unsigned long tasks_total = 0;
-    unsigned long tasks_running = 0;
-    unsigned long tasks_sleeping = 0;
-    unsigned long tasks_zombie = 0;
-    unsigned long tasks_stopped = 0;
-    unsigned long tasks_sleeping_uninterruptible = 0;
-    unsigned long tasks_other = 0;
-
-    uptime_sec = jiffies / HZ;
-
-    si_meminfo(&info);
-    mem_total_kb = ((u64)info.totalram * info.mem_unit) / 1024;
-    mem_available_kb = ((u64)si_mem_available() * PAGE_SIZE) / 1024;
-    mem_used_kb = mem_total_kb - mem_available_kb;
-
-
-    for_each_process(task) {
-        tasks_total++;
-
-        if (task_is_running(task)) {
-            tasks_running++;
-        } else if (task->exit_state & EXIT_ZOMBIE) {
-            tasks_zombie++;
-        } else if (task->__state & TASK_INTERRUPTIBLE) {
-            tasks_sleeping++;
-        } else if (task->__state & TASK_UNINTERRUPTIBLE) {
-            tasks_sleeping_uninterruptible++;
-        } else if (task->__state & __TASK_STOPPED) {
-            tasks_stopped++;
-        } else {
-            tasks_other++;
-        }
-    }
-
-    procfs_monitor_get_cpu_times(&total_cpu_time, &idle_cpu_time);
-
-    mutex_lock(&procfs_monitor_system_lock);
-
-    if (prev_total_cpu_time != 0 &&
-        total_cpu_time >= prev_total_cpu_time &&
-        idle_cpu_time >= prev_idle_cpu_time) {
-
-        delta_total = total_cpu_time - prev_total_cpu_time;
-        delta_idle  = idle_cpu_time - prev_idle_cpu_time;
-        busy_delta  = delta_total - delta_idle;
-
-        if (delta_total > 0)
-            cpu_usage_x10 = (unsigned int)div64_u64(busy_delta * 1000, delta_total);
-    } else {
-        cpu_usage_x10 = 0;
-    }
-
-    prev_total_cpu_time = total_cpu_time;
-    prev_idle_cpu_time  = idle_cpu_time;
-
-    mutex_unlock(&procfs_monitor_system_lock);
-
-    cpu_usage_int  = cpu_usage_x10 / 10;
-    cpu_usage_frac = cpu_usage_x10 % 10;
-
-    /*
-     * Uptime in seconds since kernel startup
-     */
-    seq_printf(m, "uptime_sec: %lu\n", uptime_sec);
-
-    /*
-     * Total RAM in Kb
-     */
-    seq_printf(m, "mem_total_kb: %llu\n", mem_total_kb);
-
-    /*
-     * RAM available for allocation without swapping
-     */
-    seq_printf(m, "mem_available_kb: %llu\n", mem_available_kb);
-
-    /*
-     * RAM used in Kb
-     */
-    seq_printf(m, "mem_used_kb: %llu\n", mem_used_kb);
-
-    /*
-     * CPU usage (delta is since previous file open)
-     */
-    seq_printf(m, "cpu_usage_percent: %u.%u\n", cpu_usage_int, cpu_usage_frac);
-
-    /*
-     * Total processes (not threads!)
-     */
-    seq_printf(m, "tasks_total: %lu\n", tasks_total);
-
-    /*
-     * Process stat by state
-     */
-    seq_printf(m, "tasks_running: %lu\n", tasks_running);
-    seq_printf(m, "tasks_sleeping: %lu\n", tasks_sleeping);
-    seq_printf(m, "tasks_zombie: %lu\n", tasks_zombie);
-    seq_printf(m, "tasks_stopped: %lu\n", tasks_stopped);
-    seq_printf(m, "tasks_sleeping_uninterruptible: %lu\n", tasks_sleeping_uninterruptible);
-    seq_printf(m, "tasks_other: %lu\n", tasks_other);
-
-    return 0;
-}
-
-static int procfs_monitor_system_open(struct inode *inode, struct file *file)
-{
-    return single_open(file, procfs_monitor_system_show, NULL);
-}
-
-static const struct proc_ops procfs_monitor_system_ops = {
-    .proc_open    = procfs_monitor_system_open,
-    .proc_read    = seq_read,
-    .proc_lseek   = seq_lseek,
-    .proc_release = single_release,
-};
-
-static const char *procfs_monitor_task_state_to_str(struct task_struct *task)
-{
-    if (task_is_running(task))
-        return "running";
-
-    if (task->__state & TASK_INTERRUPTIBLE)
-        return "sleeping";
-
-    if (task->__state & TASK_UNINTERRUPTIBLE)
-        return "sleeping-uninterruptible";
-
-    if (task->__state & __TASK_STOPPED)
-        return "stopped";
-
-    if (task->__state & __TASK_TRACED)
-        return "tracing-stop";
-
-    if (task->exit_state & EXIT_ZOMBIE)
-        return "zombie";
-
-    if (task->exit_state & EXIT_DEAD)
-        return "dead";
-
-#ifdef TASK_PARKED
-    if (task->__state & TASK_PARKED)
-        return "parked";
-#endif
-
-#ifdef TASK_IDLE
-    if (task->__state & TASK_IDLE)
-        return "idle";
-#endif
-
-    return "unknown";
-}
-
-static struct task_struct *procfs_monitor_get_task_by_pid(pid_t pid)
-{
-    struct pid *kpid;
-    struct task_struct *task;
-
-    kpid = find_get_pid(pid);
-    if (!kpid)
-        return NULL;
-
-    task = get_pid_task(kpid, PIDTYPE_PID);
-
-    put_pid(kpid);
-    return task;
-}
-
-static int procfs_monitor_get_task_memory(struct task_struct *task,
-                                          u64 *vm_size_kb,
-                                          u64 *rss_kb)
-{
-    struct mm_struct *mm;
-    u64 vm_pages;
-    u64 rss_pages;
-
-    mm = get_task_mm(task);
-    if (!mm) {
-        *vm_size_kb = 0;
-        *rss_kb = 0;
-        return 0;
-    }
-
-    vm_pages = (u64)mm->total_vm;
-    rss_pages = (u64)get_mm_rss(mm);
-
-    mmput(mm);
-
-    *vm_size_kb = (vm_pages * PAGE_SIZE) / 1024;
-    *rss_kb = (rss_pages * PAGE_SIZE) / 1024;
-
-    return 0;
-}
-
-static void procfs_monitor_get_task_cputime(struct task_struct *task,
-                                            u64 *user_ticks,
-                                            u64 *system_ticks,
-                                            u64 *total_ticks)
-{
-    u64 utime;
-    u64 stime;
-
-    utime = (u64)task->utime;
-    stime = (u64)task->stime;
-
-    *user_ticks = utime;
-    *system_ticks = stime;
-    *total_ticks = utime + stime;
-}
-
-static int procfs_monitor_pid_show(struct seq_file *m, void *v)
-{
-    struct procfs_monitor_pid_entry *entry = m->private;
-    struct task_struct *task;
-    pid_t pid;
-    pid_t ppid;
-    const char *state_str;
-    int threads;
-    u64 vm_size_kb;
-    u64 rss_kb;
-    u64 cpu_user_ticks;
-    u64 cpu_system_ticks;
-    u64 cpu_total_ticks;
-
-    if (!entry)
-        return -EINVAL;
-
-    pid = entry->pid;
-
-    task = procfs_monitor_get_task_by_pid(pid);
-    if (!task)
-        return -ESRCH;
-
-    ppid = task_ppid_nr(task);
-
-    state_str = procfs_monitor_task_state_to_str(task);
-
-    threads = get_nr_threads(task);
-
-    procfs_monitor_get_task_memory(task, &vm_size_kb, &rss_kb);
-
-    procfs_monitor_get_task_cputime(task,
-                                    &cpu_user_ticks,
-                                    &cpu_system_ticks,
-                                    &cpu_total_ticks);
-
-    /*
-     * Process id
-     */
-    seq_printf(m, "pid: %d\n", pid);
-
-    /*
-     * Parent process id
-     */
-    seq_printf(m, "ppid: %d\n", ppid);
-
-    /*
-     * Process short name
-     */
-    seq_printf(m, "comm: %s\n", task->comm);
-
-    /*
-     * Human-readable process state
-     */
-    seq_printf(m, "state: %s\n", state_str);
-
-    /*
-     * Thread count in process thread group
-     */
-    seq_printf(m, "threads: %d\n", threads);
-
-    /*
-     * Process VMA size
-     */
-    seq_printf(m, "vm_size_kb: %llu\n", vm_size_kb);
-
-    /*
-     * Physical RAM usage
-     */
-    seq_printf(m, "rss_kb: %llu\n", rss_kb);
-
-    /*
-     * User-space CPU time
-     */
-    seq_printf(m, "cpu_time_user_ticks: %llu\n", cpu_user_ticks);
-
-    /*
-     * Kernel-space CPU time
-     */
-    seq_printf(m, "cpu_time_system_ticks: %llu\n", cpu_system_ticks);
-
-    /*
-     * Total CPU time
-     */
-    seq_printf(m, "cpu_time_total_ticks: %llu\n", cpu_total_ticks);
-
-    put_task_struct(task);
-    return 0;
-}
-
-static int procfs_monitor_pid_open(struct inode *inode, struct file *file)
-{
-    void *data = pde_data(inode);
-
-    return single_open(file, procfs_monitor_pid_show, data);
-}
-
-static const struct proc_ops procfs_monitor_pid_ops = {
-    .proc_open    = procfs_monitor_pid_open,
-    .proc_read    = seq_read,
-    .proc_lseek   = seq_lseek,
-    .proc_release = single_release,
-};
 
 static int procfs_monitor_register_pid_entry(pid_t pid)
 {
