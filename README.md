@@ -62,3 +62,8 @@ KDE.
 - [Условие](task4/TASK.md)
 - [Отчет](task4/README.md)
 - [Демо работы](task4/DEMO.md)
+
+## Project: procfs system monitor
+- [Условие](project/TASK.md)
+- [Отчет](project/README.md)
+- [Демо работы](project/DEMO.md)
